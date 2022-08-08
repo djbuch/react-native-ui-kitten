@@ -139,6 +139,7 @@ export abstract class BaseDatepickerComponent<P, D = Date> extends React.Compone
       placeholder: {
         marginHorizontal: textMarginHorizontal,
         color: placeholderColor,
+        fontSize: textFontSize,
       },
       icon: {
         width: iconWidth,
