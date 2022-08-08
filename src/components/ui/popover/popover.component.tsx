@@ -5,12 +5,7 @@
  */
 
 import React from 'react';
-import {
-  StyleSheet,
-  BackHandler,
-  NativeEventSubscription,
-  Platform,
-} from 'react-native';
+import {StyleSheet, View} from 'react-native';
 import {
   Frame,
   MeasureElement,
@@ -20,7 +15,7 @@ import {
   Overwrite,
 } from '../../devsupport';
 import { ModalService } from '../../theme';
-import { ModalProps } from '../modal/modal.component';
+import {Modal, ModalProps, RNModalProps} from '../modal/modal.component';
 import {
   PopoverView,
   PopoverViewElement,
@@ -33,11 +28,9 @@ import {
   PopoverPlacements,
 } from './type';
 
-type PopoverModalProps = Overwrite<ModalProps, {
-  children?: React.ReactElement;
-}>;
+type PopoverModalProps = Overwrite<ModalProps, { children?: React.ReactElement; }>;
 
-export interface PopoverProps extends PopoverViewProps, PopoverModalProps {
+export interface PopoverProps extends PopoverViewProps, PopoverModalProps, RNModalProps {
   anchor: RenderFCProp;
   fullWidth?: boolean;
 }
@@ -46,18 +39,15 @@ export type PopoverElement = React.ReactElement<PopoverProps>;
 
 interface State {
   childFrame: Frame;
-  anchorFrame: Frame;
   forceMeasure: boolean;
+  actualPlacement: PopoverPlacement;
+  contentPosition: Point;
 }
 
 /**
  * Displays a content positioned relative to another view.
  *
  * @extends React.Component
- *
- * @method {() => void} show - Sets `content` component visible.
- *
- * @method {() => void} hide - Sets `content` component invisible.
  *
  * @property {boolean} visible - Whether content component is visible.
  * Defaults to false.
@@ -74,10 +64,25 @@ interface State {
  *
  * @property {string | PopoverPlacement} placement - Position of the content component relative to the `anchor`.
  * Can be `left`, `top`, `right`, `bottom`, `left start`, `left end`, `top start`, `top end`, `right start`,
- * `right end`, `bottom start` or `bottom end`.
+ * `right end`, `bottom start`, `bottom end`, `inner`, `inner top` or `inner bottom`.
  * Defaults to *bottom*.
  *
+ * @property {boolean} hardwareAccelerated - Controls whether to force hardware acceleration for the underlying window.
+ * Defaults to false.
+ *
+ * @property {'none' | 'slide' | 'fade'} animationType - Controls how the modal animates.
+ * Defaults to 'none'.
+ *
+ * @property {Array<'portrait' | 'portrait-upside-down' | 'landscape' | 'landscape-left' | 'landscape-right'>}
+ * supportedOrientations -
+ * allows the modal to be rotated to any of the specified orientations.
+ * On iOS, the modal is still restricted by what's specified
+ * in your app's Info.plist's UISupportedInterfaceOrientations field
+ *
  * @property {StyleProp<ViewStyle>} backdropStyle - Style of backdrop.
+ *
+ * @property {(event: NativeSyntheticEvent<any>) => void} onShow -
+ * Allows passing a function that will be called once the modal has been shown.
  *
  * @property {ViewProps} ...ViewProps - Any props applied to View component.
  *
@@ -101,98 +106,54 @@ export class Popover extends React.Component<PopoverProps, State> {
 
   public state: State = {
     childFrame: Frame.zero(),
-    anchorFrame: Frame.zero(),
     forceMeasure: false,
+    actualPlacement: this.preferredPlacement,
+    contentPosition: Point.zero(),
   };
 
-  private hardwareBackSubscription: NativeEventSubscription;
-  private modalId: string;
-  private contentPosition: Point = Point.outscreen();
   private placementService: PopoverPlacementService = new PopoverPlacementService();
-  private isPopoverUnmounted: boolean;
-
-  private actualPlacement: PopoverPlacement = this.preferredPlacement;
 
   private get preferredPlacement(): PopoverPlacement {
     return PopoverPlacements.parse(this.props.placement);
   }
 
   private get contentFlexPosition() {
-    const { x: left, y: top } = this.contentPosition;
+    const { x: left, y: top } = this.state.contentPosition;
     return { left, top };
   }
 
-  private get backdropConfig() {
-    const { onBackdropPress, backdropStyle } = this.props;
-    return {
-      onBackdropPress,
-      backdropStyle,
-    };
-  }
-
-  public show = (): void => {
-    if (!this.isPopoverUnmounted) {
-      this.modalId = ModalService.show(this.renderMeasuringPopoverElement(), this.backdropConfig);
-    }
-  };
-
-  public hide = (): void => {
-    this.modalId = ModalService.hide(this.modalId);
-  };
-
-  private onHardwareBackPress = (): boolean => {
-    this.hide();
-    return false;
-  };
-
   public componentDidUpdate(prevProps: PopoverProps): void {
-    if (!this.modalId && this.props.visible && !this.state.forceMeasure) {
+    if (this.props.visible && !this.state.forceMeasure) {
       this.setState({ forceMeasure: true });
-      return;
-    }
-
-    if (this.modalId && !this.props.visible) {
-      this.contentPosition = Point.outscreen();
-      this.hide();
     }
   }
 
-  public componentDidMount(): void {
-    if (Platform.OS === 'android') {
-      this.hardwareBackSubscription = BackHandler.addEventListener('hardwareBackPress', this.onHardwareBackPress);
+  private static getDerivedStateFromProps(props, state) {
+    if (!props.visible) {
+      return {
+        ...state,
+        contentPosition: Point.outscreen(),
+      };
     }
-  }
-
-  public componentWillUnmount(): void {
-    this.hardwareBackSubscription?.remove();
-    this.hide();
-
-    this.isPopoverUnmounted = true;
+    return null;
   }
 
   private onChildMeasure = (childFrame: Frame): void => {
     this.state.childFrame = childFrame;
-
-    if (!this.modalId && this.props.visible) {
-      this.show();
-      return;
-    }
-
-    if (this.modalId && this.props.visible) {
-      ModalService.update(this.modalId, this.renderPopoverElement());
-    }
   };
 
   private onContentMeasure = (anchorFrame: Frame): void => {
-    this.state.anchorFrame = anchorFrame;
-
     const placementOptions: PlacementOptions = this.findPlacementOptions(anchorFrame, this.state.childFrame);
-    this.actualPlacement = this.placementService.find(this.preferredPlacement, placementOptions);
+    const actualPlacement = this.placementService.find(this.preferredPlacement, placementOptions);
 
-    const displayFrame: Frame = this.actualPlacement.frame(placementOptions);
-    this.contentPosition = displayFrame.origin;
+    const displayFrame: Frame = actualPlacement.frame(placementOptions);
+    const contentPosition = displayFrame.origin;
 
-    ModalService.update(this.modalId, this.renderPopoverElement());
+    this.setState({
+      actualPlacement,
+      contentPosition,
+    });
+
   };
 
   private findPlacementOptions = (contentFrame: Frame, childFrame: Frame): PlacementOptions => {
@@ -216,7 +177,7 @@ export class Popover extends React.Component<PopoverProps, State> {
       <PopoverView
         {...this.props}
         contentContainerStyle={[this.props.contentContainerStyle, styles.popoverView, this.contentFlexPosition]}
-        placement={this.actualPlacement.reverse()}>
+        placement={this.state.actualPlacement.reverse()}>
           {this.renderContentElement()}
       </PopoverView>
     );
@@ -224,9 +185,7 @@ export class Popover extends React.Component<PopoverProps, State> {
 
   private renderMeasuringPopoverElement = (): MeasuringElement => {
     return (
-      <MeasureElement
-        shouldUseTopInsets={ModalService.getShouldUseTopInsets}
-        onMeasure={this.onContentMeasure}>
+      <MeasureElement onMeasure={this.onContentMeasure}>
           {this.renderPopoverElement()}
       </MeasureElement>
     );
@@ -234,12 +193,25 @@ export class Popover extends React.Component<PopoverProps, State> {
 
   public render(): React.ReactElement {
     return (
-      <MeasureElement
-        shouldUseTopInsets={ModalService.getShouldUseTopInsets}
-        force={this.state.forceMeasure}
-        onMeasure={this.onChildMeasure}>
+      <View>
+        <MeasureElement
+          force={this.state.forceMeasure}
+          shouldUseTopInsets={ModalService.getShouldUseTopInsets}
+          onMeasure={this.onChildMeasure}>
           {this.props.anchor()}
-      </MeasureElement>
+        </MeasureElement>
+          <Modal
+            visible={this.props.visible}
+            shouldUseContainer={false}
+            backdropStyle={this.props.backdropStyle}
+            animationType={this.props.animationType}
+            hardwareAccelerated={this.props.hardwareAccelerated}
+            supportedOrientations={this.props.supportedOrientations}
+            onShow={this.props.onShow}
+            onBackdropPress={this.props.onBackdropPress}>
+            {this.renderMeasuringPopoverElement()}
+          </Modal>
+      </View>
     );
   }
 }
